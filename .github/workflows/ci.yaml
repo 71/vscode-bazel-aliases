@@ -56,6 +56,18 @@ jobs:
         if: steps.get-version.outputs.create-release == 'true'
         run: pnpm run package
 
+      - name: Publish to Visual Studio Marketplace
+        if: steps.get-version.outputs.create-release == 'true'
+        run: pnpm run publish vscode
+        env:
+          VSCE_PAT: ${{ secrets.VS_MARKETPLACE_TOKEN }}
+
+      - name: Publish to Open VSX Registry
+        if: steps.get-version.outputs.create-release == 'true'
+        run: pnpm run publish open-vsx
+        env:
+          OVSX_PAT: ${{ secrets.OPEN_VSX_TOKEN }}
+
       - name: Create release
         if: steps.get-version.outputs.create-release == 'true'
         run: |
