@@ -56,6 +56,16 @@ jobs:
         if: steps.get-version.outputs.create-release == 'true'
         run: pnpm run package
 
+      - name: Create release
+        if: steps.get-version.outputs.create-release == 'true'
+        run: |
+          gh release create $tag \
+            --notes "Bazel Aliases $tag" \
+            *.vsix
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ steps.get-version.outputs.version }}
+
       - name: Publish to Visual Studio Marketplace
         if: steps.get-version.outputs.create-release == 'true'
         run: pnpm exec vsce publish --packagePath *.vsix
@@ -67,13 +77,3 @@ jobs:
         run: pnpm exec ovsx publish *.vsix
         env:
           OVSX_PAT: ${{ secrets.OPEN_VSX_TOKEN }}
-
-      - name: Create release
-        if: steps.get-version.outputs.create-release == 'true'
-        run: |
-          gh release create $tag \
-            --notes "Bazel Aliases $tag" \
-            *.vsix
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ steps.get-version.outputs.version }}
