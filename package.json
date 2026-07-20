@@ -99,6 +99,7 @@
     "pretest": "pnpm run compile-tests && pnpm run compile && pnpm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
+    "check": "npm-run-all -p check-types lint",
     "test": "vscode-test"
   },
   "devDependencies": {
