@@ -23,10 +23,23 @@ jobs:
       - name: Check all
         run: pnpm run check
 
+      - name: Get version
+        id: get-version
+        run: |
+          version=v$(sed -En 's/ *"version": "([0-9.]+)",/\1/p' package.json)
+          create_release=$(git ls-remote --exit-code --tags origin $version && echo false || echo true)
+
+          echo version=$version >> "$GITHUB_OUTPUT"
+          echo create-release=$create_release >> "$GITHUB_OUTPUT"
+
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+      create-release: ${{ steps.get-version.outputs.create-release }}
+
   tag:
     name: Tag
     needs: check
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && needs.check.outputs.create-release == 'true'
 
     runs-on: ubuntu-latest
 
@@ -41,43 +54,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Get version
-        id: get-version
-        run: |
-          version=v$(sed -En 's/ *"version": "([0-9.]+)",/\1/p' package.json)
-          create_release=$(git ls-remote --exit-code --tags origin $version && echo false || echo true)
-
-          echo version=$version >> "$GITHUB_OUTPUT"
-          echo create-release=$create_release >> "$GITHUB_OUTPUT"
-
       - name: Install pnpm
-        if: steps.get-version.outputs.create-release == 'true'
         uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
         with:
           run_install: true
 
       - name: Package release
-        if: steps.get-version.outputs.create-release == 'true'
         run: pnpm run package
 
       - name: Create release
-        if: steps.get-version.outputs.create-release == 'true'
         run: |
           gh release create $tag \
             --notes "Bazel Aliases $tag" \
             *.vsix
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ steps.get-version.outputs.version }}
+          tag: ${{ needs.check.outputs.version }}
 
       - name: Publish to Visual Studio Marketplace
-        if: steps.get-version.outputs.create-release == 'true'
         run: pnpm exec vsce publish --packagePath *.vsix --skip-duplicate
         env:
           VSCE_PAT: ${{ secrets.VS_MARKETPLACE_TOKEN }}
 
       - name: Publish to Open VSX Registry
-        if: steps.get-version.outputs.create-release == 'true'
         run: pnpm exec ovsx publish *.vsix --skip-duplicate
         env:
           OVSX_PAT: ${{ secrets.OPEN_VSX_TOKEN }}
