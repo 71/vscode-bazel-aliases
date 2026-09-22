@@ -50,6 +50,31 @@ export async function activate(
     return target;
   };
 
+  // Cache holding, for each target label whether it can be `bazel run`ed.
+  let runnableTargets: Record<string, boolean> = {};
+
+  /**
+   * Queries whether the given targets are runnable and updates the cache accordingly.
+   * If any of the targets' runnable status changes, the status bar is updated accordingly.
+  */
+  const queryTargetsRunnable = (targets: readonly string[]) => {
+    // Filter targets that are not queriable.
+    targets = targets.filter((target) => /^(\/\/|:|@)\S+$/.test(target));
+    scanTargetsRunnable(targets, context.storageUri!).then((result) => {
+      let hasChanged = false;
+      for (const [key, value] of Object.entries(result)) {
+        console.log(`Runnable target changed: ${key} = ${value}`);
+        if (runnableTargets[key] !== value) {
+          hasChanged = true;
+        }
+        runnableTargets[key] = value;
+      }
+      if (hasChanged) {
+        updateStatusBar();
+      }
+    });
+  };
+
   // -----------------------------------------------------------------------------------------------
   // MARK: Status bar
 
@@ -86,7 +111,12 @@ export async function activate(
         "| Alias | Target | Actions |\n|---|---|---|\n",
       );
 
+      // Run the query in background to determine which targets are runnable.
+      // This will call this function again if new results are found.
+      queryTargetsRunnable(targetKvs.map(([_, target]) => target).filter((target) => target != null));
+
       for (const [alias, target] of targetKvs) {
+        const runnable = target != null && runnableTargets[target] === true;
         statusBarItem.tooltip.appendMarkdown(
           `| \`${alias}\` | [${
             target ? `\`${target}\`` : "Click to set"
@@ -94,9 +124,9 @@ export async function activate(
             target
               ? `[Build](command:${extensionId}.build?${
                 queryString(alias)
-              }) — [Run](command:${extensionId}.run?${
+              }) — ${runnable ? `[Run](command:${extensionId}.run?${
                 queryString(alias)
-              }) — [Copy label](command:${extensionId}.copy?${
+              }) — ` : ""}  [Copy label](command:${extensionId}.copy?${
                 queryString(alias)
               })`
               : ""
@@ -526,10 +556,11 @@ export async function activate(
   // -----------------------------------------------------------------------------------------------
   // MARK: Startup
 
+  // Cleanup previous session's run.
+  await cleanupStorage(context);
+
   updateStatusBar();
   statusBarItem.show();
-
-  await cleanupStorage(context);
 }
 
 /** Called by VS Code. */
@@ -583,21 +614,86 @@ async function executeBazelCommand(
   }
 }
 
+/**
+ * Scans targets and returns a record mapping each target label to a boolean indicating if it is directly runnable via `bazel run`.
+ */
+async function scanTargetsRunnable(
+  targets: readonly string[],
+  storageUri: vscode.Uri,
+): Promise<Record<string, boolean>> {
+  const result: Record<string, boolean> = {};
+  for (const target of targets) {
+    result[target] = false;
+  }
+
+  if (targets.length === 0) {
+    return result;
+  }
+
+  // Bazel vscode extension has no support for queries, and we cannot access the output of a task directly.
+  // Thus, we create a temporary file.
+  await vscode.workspace.fs.createDirectory(storageUri);
+
+  // To avoid conflicts between scans, we append a random UUID.
+  const outputUri = vscode.Uri.joinPath(
+    storageUri,
+    `runnable-targets-${crypto.randomUUID()}`,
+  );
+
+  try {
+    const targetsSet = `set(${targets.join(" ")})`;
+    await executeBazelTask(
+      "query",
+      `executables(${targetsSet}) + tests(${targetsSet})`,
+      {
+        extraArgs: ["--keep_going", `--output_file=${outputUri.fsPath}`],
+        name: "query runnable targets",
+        sneaky: true,
+      },
+    );
+
+    // Rather than looking at the exit code, we read whatever Bazel managed to resolve; the file is
+    // missing altogether if the query failed outright.
+    const outputBytes = await vscode.workspace.fs.readFile(outputUri).then(
+      (bytes) => bytes,
+      () => undefined,
+    );
+
+    if (outputBytes === undefined) {
+      return result;
+    }
+
+    // Parse the output
+    for (
+      const line of new TextDecoder().decode(outputBytes).trim().split("\n")
+    ) {
+      if (line === "") {
+        continue;
+      }
+      result[line] = true;
+    }
+    return result;
+  } finally {
+    await vscode.workspace.fs.delete(outputUri).then(undefined, () => {});
+  }
+}
+
 interface ExecuteBazelTaskOptions {
   env?: Record<string, string>;
   autoClose?: boolean;
   extraArgs?: string[];
+  sneaky?: boolean;
+  name?: string;
 }
 
 /**
- * Executes `bazel <build|run> <target> [extraArgs...]` and returns whether the command succeeded.
- *
- * This uses the Bazel extension's configuration to determine `bazel`, extra arguments, etc.
+ * Same as `vscode.commands.executeCommand(command, ...args)`, but prompts the user to install the
+ * Bazel extension if it is not installed.
  */
 async function executeBazelTask(
-  command: "build" | "run",
+  command: "build" | "run" | "query",
   target: string,
-  { env, autoClose = true, extraArgs = [] }: ExecuteBazelTaskOptions = {},
+  { env, autoClose = true, extraArgs = [], sneaky = false, name }: ExecuteBazelTaskOptions = {},
 ): Promise<boolean> {
   // Unfortunately `bazel.buildTarget` does not accept a target (it accepts a function, which we
   // cannot pass through `executeCommand()` [^1]), so we have to execute the task directly.
@@ -620,7 +716,7 @@ async function executeBazelTask(
       targets: [target],
     },
     workspaceFolder ?? vscode.TaskScope.Workspace,
-    `${command} ${target}`,
+    name ?? `${command} ${target}`,
     "bazel-aliases",
   );
 
@@ -633,7 +729,10 @@ async function executeBazelTask(
     [
       ...bazelConfiguration.get<string[]>("commandLine.startupOptions", []),
       command,
-      ...bazelConfiguration.get<string[]>("commandLine.commandArgs", []),
+      // `commandLine.commandArgs` holds build options, which `bazel query` does not accept.
+      ...(command === "query"
+        ? []
+        : bazelConfiguration.get<string[]>("commandLine.commandArgs", [])),
       target,
       ...extraArgs,
     ],
@@ -645,8 +744,8 @@ async function executeBazelTask(
     close: autoClose,
     echo: true,
     focus: false,
-    panel: vscode.TaskPanelKind.Shared,
-    reveal: vscode.TaskRevealKind.Silent,
+    panel: sneaky ? vscode.TaskPanelKind.Dedicated : vscode.TaskPanelKind.Shared,
+    reveal: sneaky ? vscode.TaskRevealKind.Never : vscode.TaskRevealKind.Silent,
     showReuseMessage: false,
   };
 
