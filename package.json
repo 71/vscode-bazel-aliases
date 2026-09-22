@@ -25,6 +25,7 @@
   "categories": ["Other"],
   "api": "none",
   "main": "./dist/extension.js",
+  "browser": "./dist/extension.js",
 
   "capabilities": {
     "untrustedWorkspaces": {

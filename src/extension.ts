@@ -1,8 +1,4 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import * as vscode from "vscode";
-
-const execFileAsync = promisify(execFile);
 
 const defaultAlias = "active";
 
@@ -54,29 +50,6 @@ export async function activate(
     return target;
   };
 
-  // Cache holding, for each target label whether it can be `bazel run`ed.
-  let runnableTargets: Record<string, boolean> = {};
-
-  /**
-   * Updates the cache of runnable targets by scanning all targets.
-   * If anything changed, we refresh the status bar.
-   */
-  const updateRunnableTargets = () => {
-    scanAllTargetsRunnable().then((result) => {
-      let hasChanged = false;
-      for (const [key, value] of Object.entries(result)) {
-        console.log(`Runnable target changed: ${key} = ${value}`);
-        if (runnableTargets[key] !== value) {
-          hasChanged = true;
-        }
-        runnableTargets[key] = value;
-      }
-      if (hasChanged) {
-        updateStatusBar();
-      }
-    });
-  };
-
   // -----------------------------------------------------------------------------------------------
   // MARK: Status bar
 
@@ -86,8 +59,6 @@ export async function activate(
   context.subscriptions.push(statusBarItem);
 
   const updateStatusBar = () => {
-    updateRunnableTargets(); // Will call updateStatusBar() again if anything changed.
-
     statusBarItem.text = aliases[defaultAlias] != null
       ? `$(heart) ${aliases[defaultAlias]}`
       : "$(heart) No active target";
@@ -116,17 +87,16 @@ export async function activate(
       );
 
       for (const [alias, target] of targetKvs) {
-        const runnable = target != null && runnableTargets[target] === true;
         statusBarItem.tooltip.appendMarkdown(
           `| \`${alias}\` | [${
             target ? `\`${target}\`` : "Click to set"
           }](command:${extensionId}.update?${queryString(alias)}) | ${
             target
-              ? `[Build](command:${extensionId}.build?${queryString(alias)}) ${
-                runnable
-                  ? ` — [Run](command:${extensionId}.run?${queryString(alias)})`
-                  : ""
-              } — [Copy label](command:${extensionId}.copy?${
+              ? `[Build](command:${extensionId}.build?${
+                queryString(alias)
+              }) — [Run](command:${extensionId}.run?${
+                queryString(alias)
+              }) — [Copy label](command:${extensionId}.copy?${
                 queryString(alias)
               })`
               : ""
@@ -611,40 +581,6 @@ async function executeBazelCommand(
       }
     }
   }
-}
-
-/**
- * Scans all the targets and return a record mapping each target label to a boolean indicating if it is directly runnable via `bazel run`.
- */
-async function scanAllTargetsRunnable(): Promise<Record<string, boolean>> {
-  const bazelWorkspace = await vscode.commands.executeCommand<string>(
-    "bazel.info.workspace",
-  );
-  const bazelConfiguration = vscode.workspace.getConfiguration("bazel");
-
-  const { stdout } = await execFileAsync(
-    bazelConfiguration.get<string>("executable", "bazel"),
-    [
-      ...bazelConfiguration.get<string[]>("commandLine.startupOptions", []),
-      "query",
-      "//...",
-      "--output=label_kind",
-    ],
-    { cwd: bazelWorkspace },
-  );
-
-  const result: Record<string, boolean> = {};
-  // Parse the output
-  for (const line of stdout.trim().split("\n")) {
-    if (line === "") {
-      continue;
-    }
-
-    // `<kind> rule //foo:bar`.
-    const [kind, _, label] = line.split(" ");
-    result[label] = kind.endsWith("_binary") || kind.endsWith("_test");
-  }
-  return result;
 }
 
 interface ExecuteBazelTaskOptions {

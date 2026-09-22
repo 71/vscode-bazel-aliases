@@ -10,7 +10,6 @@
     ],
     "rootDir": "src",
     "strict": true,
-    "noEmit": true,
-    "types": ["node"]
+    "noEmit": true
   }
 }
