@@ -7,7 +7,7 @@
     "type": "git",
     "url": "https://github.com/71/vscode-bazel-aliases"
   },
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "MPL-2.0",
 
   "engines": {
@@ -57,6 +57,12 @@
         "title": "Copy Active Target Label",
         "category": "Bazel",
         "enablement": "bazel.haveWorkspace && bazel-aliases.active"
+      },
+      {
+        "command": "bazel-aliases.run",
+        "title": "Run Active Target",
+        "category": "Bazel",
+        "enablement": "bazel.haveWorkspace && bazel-aliases.active"
       }
     ],
     "configuration": {
@@ -65,7 +71,7 @@
         "bazel-aliases.aliases": {
           "type": "object",
           "title": "Aliases",
-          "markdownDescription": "A map from alias to Bazel target.\n\nNew commands will be defined for each alias:\n\n- `bazel-aliases.<alias>.build` builds the target;\n- `bazel-aliases.<alias>.output` builds the target and yields its absolute path;\n- `bazel-aliases.<alias>.outputPath` yields the target's absolute path without building it;\n- `bazel-aliases.<alias>.envFile` builds the target and yields the absolute path to a file which contains the execution environment;\n- `bazel-aliases.<alias>.workingDirectory` builds the target and yields the absolute path of the working directory it would run under with `bazel run`;\n- `bazel-aliases.<alias>.update` sets the target corresponding to that alias for the current user/workspace.\n\nThe given values are defaults (and may be set to `null`), and can be overridden by each user.",
+          "markdownDescription": "A map from alias to Bazel target.\n\nNew commands will be defined for each alias:\n\n- `bazel-aliases.<alias>.build` builds the target;\n- `bazel-aliases.<alias>.output` builds the target and yields its absolute path;\n- `bazel-aliases.<alias>.run` builds the target and runs its output;\n- `bazel-aliases.<alias>.outputPath` yields the target's absolute path without building it;\n- `bazel-aliases.<alias>.envFile` builds the target and yields the absolute path to a file which contains the execution environment;\n- `bazel-aliases.<alias>.workingDirectory` builds the target and yields the absolute path of the working directory it would run under with `bazel run`;\n- `bazel-aliases.<alias>.update` sets the target corresponding to that alias for the current user/workspace.\n\nThe given values are defaults (and may be set to `null`), and can be overridden by each user.",
           "patternProperties": {
             "^\\w+$": {
               "type": ["string", "null"],

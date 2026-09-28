@@ -49,6 +49,8 @@ For an alias `active` (the default alias), the following commands are defined:
 
 - `bazel-aliases.active.output` builds the target and yields its absolute path.
 
+- `bazel-aliases.active.run` builds the target and runs its output.
+
 - `bazel-aliases.active.outputPath` yields the target's absolute path without
   building it.
 
