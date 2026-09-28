@@ -50,40 +50,21 @@ export async function activate(
     return target;
   };
 
-  // Cache holding, for each target label whether it can be `bazel run`ed.
-  let runnableTargets: Record<string, boolean> = {};
-
-  /**
-   * Queries whether the given targets are runnable and updates the cache accordingly.
-   * If any of the targets' runnable status changes, the status bar is updated accordingly.
-  */
-  const queryTargetsRunnable = (targets: readonly string[]) => {
-    // Filter targets that are not queriable.
-    targets = targets.filter((target) => /^(\/\/|:|@)\S+$/.test(target));
-    scanTargetsRunnable(targets, context.storageUri!).then((result) => {
-      let hasChanged = false;
-      for (const [key, value] of Object.entries(result)) {
-        console.log(`Runnable target changed: ${key} = ${value}`);
-        if (runnableTargets[key] !== value) {
-          hasChanged = true;
-        }
-        runnableTargets[key] = value;
-      }
-      if (hasChanged) {
-        updateStatusBar();
-      }
-    });
-  };
-
   // -----------------------------------------------------------------------------------------------
   // MARK: Status bar
+
+  /**
+   * Cache holding, for each ({@link normalizeLabel normalized}) target label, whether it is
+   * executable.
+   */
+  let runnableTargets: Record<string, boolean> = {};
 
   const statusBarItem = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Left,
   );
   context.subscriptions.push(statusBarItem);
 
-  const updateStatusBar = () => {
+  const updateStatusBar = (skipRunnableQuery = false) => {
     statusBarItem.text = aliases[defaultAlias] != null
       ? `$(heart) ${aliases[defaultAlias]}`
       : "$(heart) No active target";
@@ -111,26 +92,51 @@ export async function activate(
         "| Alias | Target | Actions |\n|---|---|---|\n",
       );
 
-      // Run the query in background to determine which targets are runnable.
-      // This will call this function again if new results are found.
-      queryTargetsRunnable(targetKvs.map(([_, target]) => target).filter((target) => target != null));
+      if (!skipRunnableQuery) {
+        // Run the query in background to determine which targets are runnable.
+        queryRunnableTargets(
+          targetKvs.map(([_, target]) => target).filter((target) =>
+            target != null
+          ),
+          context.storageUri!,
+        ).then((result) => {
+          let hasChanged = false;
+          for (const key in result) {
+            const value = result[key];
+            hasChanged ||= runnableTargets[key] !== value;
+            runnableTargets[key] = value;
+          }
+          if (hasChanged) {
+            updateStatusBar(/*skipRunnableQuery=*/ true);
+          }
+        });
+      }
 
-      for (const [alias, target] of targetKvs) {
+      for (let [alias, target] of targetKvs) {
+        if (target === null) {
+          statusBarItem.tooltip.appendMarkdown(
+            `| \`${alias}\` | [Click to set](command:${extensionId}.update?${
+              queryString(alias)
+            }) | |\n`,
+          );
+          continue;
+        }
+        target = normalizeLabel(target);
+
         const runnable = target != null && runnableTargets[target] === true;
+
         statusBarItem.tooltip.appendMarkdown(
-          `| \`${alias}\` | [${
-            target ? `\`${target}\`` : "Click to set"
-          }](command:${extensionId}.update?${queryString(alias)}) | ${
-            target
-              ? `[Build](command:${extensionId}.build?${
-                queryString(alias)
-              }) — ${runnable ? `[Run](command:${extensionId}.run?${
-                queryString(alias)
-              }) — ` : ""}  [Copy label](command:${extensionId}.copy?${
-                queryString(alias)
-              })`
+          `| \`${alias}\` | [\`${target}\`](command:${extensionId}.update?${
+            queryString(alias)
+          }) | ${`[Build](command:${extensionId}.build?${
+            queryString(alias)
+          }) — ${
+            runnable
+              ? `[Run](command:${extensionId}.run?${queryString(alias)}) — `
               : ""
-          } |\n`,
+          }[Copy label](command:${extensionId}.copy?${
+            queryString(alias)
+          })`} |\n`,
         );
       }
     }
@@ -296,7 +302,7 @@ export async function activate(
       });
       if (!success) {
         vscode.window.showErrorMessage(
-          `"bazel run" failed for target ${target}.`,
+          `"bazel run" failed for target ${target}, see terminal for details.`,
         );
       }
     },
@@ -438,11 +444,24 @@ export async function activate(
   };
 
   /**
-   * Parses the content of an environment file into an object.
+   * Read an environment file and parses it to an object.
    * Ignores comment lines, starting with "#".
    * Only one environment variable can be declared for each line.
    */
-  const parseEnvFileContent = (envString: string): Record<string, string> => {
+  const readEnvFile = async (envFile: string) => {
+    const path = vscode.Uri.joinPath(
+      // We assume that we a workspace folder because vscode-bazel extension also requires using a workspace folder.
+      vscode.workspace.workspaceFolders![0].uri,
+      envFile,
+    );
+    const envBytes = await vscode.workspace.fs.readFile(
+      path,
+    ).then(undefined, () => {
+      vscode.window.showErrorMessage(`Cannot read file ${path}`);
+      return new Uint8Array();
+    });
+
+    const envString = new TextDecoder().decode(envBytes);
     const envContent: Record<string, string> = {};
 
     const lines = envString.split("\n").filter((line) =>
@@ -459,31 +478,6 @@ export async function activate(
       }
     }
     return envContent;
-  };
-
-  /** Reads and parses an environment file located at an arbitrary URI. */
-  const readEnvFileAtUri = async (uri: vscode.Uri) => {
-    const envBytes = await vscode.workspace.fs.readFile(uri).then(
-      undefined,
-      () => {
-        vscode.window.showErrorMessage(`Cannot read file ${uri}`);
-        return new Uint8Array();
-      },
-    );
-    return parseEnvFileContent(new TextDecoder().decode(envBytes));
-  };
-
-  /**
-   * Reads and parses the environment file configured via `bazel-aliases.envFile`, relative to the
-   * workspace folder.
-   */
-  const readEnvFile = async (envFile: string) => {
-    const path = vscode.Uri.joinPath(
-      // We assume that we a workspace folder because vscode-bazel extension also requires using a workspace folder.
-      vscode.workspace.workspaceFolders![0].uri,
-      envFile,
-    );
-    return await readEnvFileAtUri(path);
   };
 
   const loadEnvFile = (envFile: string | null) => {
@@ -556,7 +550,7 @@ export async function activate(
   // -----------------------------------------------------------------------------------------------
   // MARK: Startup
 
-  // Cleanup previous session's run.
+  // Cleanup storage before updating the status bar, since it may update the storage contents.
   await cleanupStorage(context);
 
   updateStatusBar();
@@ -615,23 +609,26 @@ async function executeBazelCommand(
 }
 
 /**
- * Scans targets and returns a record mapping each target label to a boolean indicating if it is directly runnable via `bazel run`.
+ * Scans targets and returns a record mapping each target label to a boolean indicating if it is
+ * directly runnable via `bazel run`.
+ *
+ * Resulting labels are normalized using {@linkcode normalizeLabel()}.
  */
-async function scanTargetsRunnable(
+async function queryRunnableTargets(
   targets: readonly string[],
   storageUri: vscode.Uri,
 ): Promise<Record<string, boolean>> {
   const result: Record<string, boolean> = {};
   for (const target of targets) {
-    result[target] = false;
+    result[normalizeLabel(target)] = false;
   }
 
   if (targets.length === 0) {
     return result;
   }
 
-  // Bazel vscode extension has no support for queries, and we cannot access the output of a task directly.
-  // Thus, we create a temporary file.
+  // Bazel vscode extension has no support for queries, and we cannot access the output of a task
+  // directly. Thus, we create a temporary file.
   await vscode.workspace.fs.createDirectory(storageUri);
 
   // To avoid conflicts between scans, we append a random UUID.
@@ -641,10 +638,9 @@ async function scanTargetsRunnable(
   );
 
   try {
-    const targetsSet = `set(${targets.join(" ")})`;
     await executeBazelTask(
       "query",
-      `executables(${targetsSet}) + tests(${targetsSet})`,
+      `let x = set(${targets.join(" ")}) in executables($x) + tests($x)`,
       {
         extraArgs: ["--keep_going", `--output_file=${outputUri.fsPath}`],
         name: "query runnable targets",
@@ -655,7 +651,7 @@ async function scanTargetsRunnable(
     // Rather than looking at the exit code, we read whatever Bazel managed to resolve; the file is
     // missing altogether if the query failed outright.
     const outputBytes = await vscode.workspace.fs.readFile(outputUri).then(
-      (bytes) => bytes,
+      undefined,
       () => undefined,
     );
 
@@ -663,14 +659,14 @@ async function scanTargetsRunnable(
       return result;
     }
 
-    // Parse the output
+    // Parse the output.
     for (
       const line of new TextDecoder().decode(outputBytes).trim().split("\n")
     ) {
       if (line === "") {
         continue;
       }
-      result[line] = true;
+      result[normalizeLabel(line)] = true;
     }
     return result;
   } finally {
@@ -687,13 +683,15 @@ interface ExecuteBazelTaskOptions {
 }
 
 /**
- * Same as `vscode.commands.executeCommand(command, ...args)`, but prompts the user to install the
- * Bazel extension if it is not installed.
+ * Executes `bazel <build|run> <target> [extraArgs...]` and returns whether the command succeeded.
+ *
+ * This uses the Bazel extension's configuration to determine `bazel`, extra arguments, etc.
  */
 async function executeBazelTask(
   command: "build" | "run" | "query",
   target: string,
-  { env, autoClose = true, extraArgs = [], sneaky = false, name }: ExecuteBazelTaskOptions = {},
+  { env, autoClose = true, extraArgs = [], sneaky = false, name }:
+    ExecuteBazelTaskOptions = {},
 ): Promise<boolean> {
   // Unfortunately `bazel.buildTarget` does not accept a target (it accepts a function, which we
   // cannot pass through `executeCommand()` [^1]), so we have to execute the task directly.
@@ -729,7 +727,7 @@ async function executeBazelTask(
     [
       ...bazelConfiguration.get<string[]>("commandLine.startupOptions", []),
       command,
-      // `commandLine.commandArgs` holds build options, which `bazel query` does not accept.
+      // `commandLine.commandArgs` may hold build options, which `bazel query` does not accept.
       ...(command === "query"
         ? []
         : bazelConfiguration.get<string[]>("commandLine.commandArgs", [])),
@@ -744,7 +742,9 @@ async function executeBazelTask(
     close: autoClose,
     echo: true,
     focus: false,
-    panel: sneaky ? vscode.TaskPanelKind.Dedicated : vscode.TaskPanelKind.Shared,
+    panel: sneaky
+      ? vscode.TaskPanelKind.Dedicated
+      : vscode.TaskPanelKind.Shared,
     reveal: sneaky ? vscode.TaskRevealKind.Never : vscode.TaskRevealKind.Silent,
     showReuseMessage: false,
   };
@@ -761,6 +761,20 @@ async function executeBazelTask(
       resolve(e.exitCode === 0);
     });
   });
+}
+
+/**
+ * Normalizes a Bazel label for comparison. This attempts to _shorten_ labels, to make them nicer to
+ * display.
+ */
+function normalizeLabel(label: string): string {
+  if (/^@([\w.-]+)\/\/:\1$/.test(label)) {
+    return label.slice(0, label.lastIndexOf("//:"));
+  }
+  if (/\/([^/:]+):\1$/.test(label)) {
+    return label.slice(0, label.lastIndexOf(":"));
+  }
+  return label;
 }
 
 interface Batch {
