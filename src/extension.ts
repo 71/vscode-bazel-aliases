@@ -708,13 +708,10 @@ async function executeBazelTask(
 
   // https://github.com/bazel-contrib/vscode-bazel/blob/6518f01fd1d401d0af9be2d355b3d1e68ba4efac/src/bazel/tasks.ts#L277-L287
   const task = new vscode.Task(
-    {
-      type: "bazel",
-      command: "build",
-      targets: [target],
-    },
+    // We do not use `type: "bazel"` as it logs an information message on every execution.
+    { type: "process" },
     workspaceFolder ?? vscode.TaskScope.Workspace,
-    name ?? `${command} ${target}`,
+    `bazel: ${name ?? `${command} ${target}`}`,
     "bazel-aliases",
   );
 
